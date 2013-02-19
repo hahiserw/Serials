@@ -1,0 +1,3 @@
+# Player settings
+player=vlc
+player_options="-q -f --playlist-autostart --play-and-exit"

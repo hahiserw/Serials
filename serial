@@ -1,0 +1,235 @@
+#!/bin/bash
+
+
+# Global variables
+
+# Player's configuration file
+. ~/.watching.player
+
+# egrep expression for file types of episode
+extensions='\.(mkv|avi|mpg|mpeg|ogm)$'
+
+# This file containts lines in the following format
+# id:path:last_ep
+# id: short serial name
+# path: path to directory with all serial episodes
+# last_ep: last watched episode with subdirectory path
+pointers=~/.watching
+
+temp=/tmp/watching
+
+
+# Functions
+
+# Display usage
+help() {
+	echo "Usage: $0 {watch|list|add|del|set} serial_id [additional_parameter]"
+	echo "Watch your favourites serials without remembering where you left."
+	echo "  watch  Watch another episode of serial from serials list"
+	echo "  list   List serials (without parameter) or episode(s) (as specified below)"
+	echo "    additional_parameter: [all|few|some|next]"
+	echo "  add    Adds another record to serials list"
+	echo "    additional_parameter: path_to_directory_with_episodes"
+	echo "  del    Removes record from serials list"
+	echo "  set    Set episode with this string in the filename to be watched next"
+	echo "    additional_parameter: string_contained_in_the_episode_filename"
+	exit 1
+}
+
+# Check if file exist, create if not
+check_pointers() {
+	if [ ! -e $pointers ]; then
+		echo > $pointers
+	fi
+}
+
+# Get field from specyfic record
+get() {
+	serial=$1
+	field=$2
+
+	check_pointers
+
+	case $field in
+		path)
+			fieldnr=1
+			;;
+		last)
+			fieldnr=2
+			;;
+		*)
+			echo "get: Wrong field name"
+			exit 1
+	esac
+	grep '^'"$serial"':' $pointers | cut -d':' -f$((fieldnr+1))
+}
+
+# Update last watched field record in pointers file to specified value
+update() {
+	serial=$1
+	next=$2
+	# Last watched episode don't need full path
+	# next=$(basename "$next" "$(get $serial $path)")
+	# Escape special characters for sed replacement
+	next=$(echo $next | sed -e 's/[\/&]/\\&/g')
+
+	sed -r 's/^('"$serial"':[^:]+):.*$/\1:'"$next"'/g' $pointers > $temp
+	cat $temp > $pointers
+}
+
+
+# Menu functions
+
+# List pointers file or some episodes for specified serial
+list() {
+	what=$1
+	action=$2
+	option=$3
+
+	# List entires if serial is not specified
+	if [ -z "$what" ]; then
+		sed -r 's/^([^:]+):[^:]+:([^$]*)$/\1 at \2/g' $pointers
+		exit 0
+	fi
+
+	path=$(get "$what" path)
+
+	all=/tmp/serials.list
+	tree -fi "$path" | egrep $extensions > $all
+	if [ $? -ne 0 ]; then
+		echo "list: Wrong serial directory"
+		exit 1
+	fi
+	last=$(get "$what" last)
+
+	case $action in
+		all)
+			cat $all
+			;;
+		few)
+			if [ -z "$last" ]; then
+				head -1 $all
+			else
+				grep -C1 "$last" $all
+			fi
+			;;
+		some)
+			if [ -z "$last" ]; then
+				head -5 $all
+			else
+				grep -C5 "$last" $all
+			fi
+			;;
+		next)
+			if [ -z "$last" ]; then
+				head -1 $all
+			else
+				grep -A1 "$last" $all | tail -1
+			fi
+			;;
+		# You can('t really) cheat. :P It is only used in point function
+		prev)
+			if [ -z "$option" ]; then
+				echo "list prev: No file specified"
+				exit 1
+			fi
+			prev=$(grep -B1 "$option" $all | head -1)
+			if [ "$option" = "$prev" ]; then
+				# If it is first echo nothing
+				echo -n
+			else
+				echo "$prev"
+			fi
+			;;
+		*)
+			echo "list: Wrong choice"
+			exit 1
+	esac
+}
+
+# Just add another record
+add() {
+	echo "$1:$2:" >> $pointers
+}
+
+# Delete record with this id
+del() {
+	what=$1
+	grep -v "^$what:" $pointers > $temp
+	cat $temp > $pointers
+}
+
+# Get last watched episode and play next using $player
+watch() {
+	what=$1
+	serial=$(get "$what" path)
+	if [ -z "$serial" ]; then
+		echo "No such serial"
+		exit 1
+	fi
+	next=$(list "$what" next)
+	echo "Launching episode: $next"
+
+	$player $player_options "$next"
+
+	if [ $? -eq 0 ]; then
+		update "$what" "$next"
+	else
+		echo "watch: Player error, not updating record"
+	fi
+}
+
+# Search for episodes which filename contains specified string, (user) select(s)
+# desired episode (if more then one is matched) and set it to be watched next
+point() {
+	what=$1
+	search=$2
+	list "$what" all | grep "$search" > $temp
+	lines=$(wc -l $temp | awk '{print $1}')
+	if [ $lines -gt 1 ]; then
+		# This stuff here, because we want file lines as a choices
+		OLD_IFS=${IFS}
+		IFS="
+" # Separator: newline
+		select selected in $(cat $temp) Cancel; do
+			if [ "$selected" = "Cancel" ]; then
+				exit 0
+			fi
+			break
+		done
+		IFS=${OLD_IFS}
+	else
+		selected=$(cat $temp)
+	fi
+	echo "Next to watch: $selected"
+	prev=$(list "$what" prev "$selected")
+	update "$what" "$prev"
+}
+
+
+# Main
+
+action=$1
+id=$2
+option=$3
+
+case $action in
+	watch)
+		watch $id
+		;;
+	list)
+		list $id $option
+		;;
+	add)
+		add $id "$option"
+		;;
+	del)
+		del $id
+		;;
+	set)
+		point $id "$option"
+		;;
+	*)
+		help
+		exit 1
+esac
