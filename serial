@@ -7,7 +7,7 @@
 . ~/.watching.player
 
 # egrep expression for file types of episode
-extensions='\.(mkv|avi|mpg|mpeg|ogm)$'
+extensions='\.(mkv|avi|mpg|mpeg|ogm|rmvb)$'
 
 # This file containts lines in the following format
 # id:path:last_ep
@@ -27,12 +27,13 @@ help() {
 	echo "Watch your favourites serials without remembering where you left."
 	echo "  watch  Watch another episode of serial from serials list"
 	echo "  list   List serials (without parameter) or episode(s) (as specified below)"
-	echo "    additional_parameter: [all|few|some|next]"
+	echo "         It shows current and next episode by default"
+	echo "           additional_parameter: [all|few|some|next]"
 	echo "  add    Adds another record to serials list"
-	echo "    additional_parameter: path_to_directory_with_episodes"
+	echo "           additional_parameter: path_to_directory_with_episodes"
 	echo "  del    Removes record from serials list"
 	echo "  set    Set episode with this string in the filename to be watched next"
-	echo "    additional_parameter: string_contained_in_the_episode_filename"
+	echo "           additional_parameter: string_contained_in_the_episode_filename"
 	exit 1
 }
 
@@ -52,16 +53,21 @@ get() {
 
 	case $field in
 		path)
-			fieldnr=1
+			fieldnr=2
 			;;
 		last)
-			fieldnr=2
+			fieldnr=3
 			;;
 		*)
 			echo "get: Wrong field name"
 			exit 1
 	esac
-	grep '^'"$serial"':' $pointers | cut -d':' -f$((fieldnr+1))
+
+	value=$(grep '^'"$serial"':' $pointers) || {
+		echo "get: No such serial"
+		exit 1
+	}
+	echo $value | cut -d':' -f$fieldnr
 }
 
 # Update last watched field record in pointers file to specified value
@@ -100,18 +106,12 @@ list() {
 		echo "list: Wrong serial directory"
 		exit 1
 	fi
-	last=$(get "$what" last)
+	temp=$(get "$what" last)
+	last=$(echo "$temp" | awk '{gsub(/[\[\&\]]/, "\\\\&"); print}')
 
 	case $action in
 		all)
 			cat $all
-			;;
-		few)
-			if [ -z "$last" ]; then
-				head -1 $all
-			else
-				grep -C1 "$last" $all
-			fi
 			;;
 		some)
 			if [ -z "$last" ]; then
@@ -129,11 +129,13 @@ list() {
 			;;
 		# You can('t really) cheat. :P It is only used in point function
 		prev)
+			# echo "setting prev"
 			if [ -z "$option" ]; then
 				echo "list prev: No file specified"
 				exit 1
 			fi
-			prev=$(grep -B1 "$option" $all | head -1)
+			temp=$(echo "$option" | awk '{gsub(/[\[\&\]]/, "\\\\&"); print}')
+			prev=$(grep -B1 "$temp" $all | head -1)
 			if [ "$option" = "$prev" ]; then
 				# If it is first echo nothing
 				echo -n
@@ -141,13 +143,21 @@ list() {
 				echo "$prev"
 			fi
 			;;
-		*)
-			echo "list: Wrong choice"
-			exit 1
+		*|few)
+			if [ -z "$last" ]; then
+				head -1 $all
+			else
+				grep -C1 "$last" $all
+			fi
+			;;
+		# *)
+		# 	echo "list: Wrong choice"
+		# 	exit 1
 	esac
 }
 
 # Just add another record
+# TODO: Improve adding to accept ids with space in it?
 add() {
 	echo "$1:$2:" >> $pointers
 }
@@ -164,10 +174,14 @@ watch() {
 	what=$1
 	serial=$(get "$what" path)
 	if [ -z "$serial" ]; then
-		echo "No such serial"
+		echo "watch: No such serial"
 		exit 1
 	fi
 	next=$(list "$what" next)
+	if [ -z "$next" ]; then
+		echo "watch: Wrong next episode"
+		exit 1
+	fi
 	echo "Launching episode: $next"
 
 	$player $player_options "$next"
@@ -186,6 +200,10 @@ point() {
 	search=$2
 	list "$what" all | grep "$search" > $temp
 	lines=$(wc -l $temp | awk '{print $1}')
+	if [ $lines -eq 0 ]; then
+		echo "set: No match found"
+		exit 1
+	fi
 	if [ $lines -gt 1 ]; then
 		# This stuff here, because we want file lines as a choices
 		OLD_IFS=${IFS}
